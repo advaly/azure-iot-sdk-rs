@@ -176,6 +176,7 @@ pub(crate) struct MqttTransport {
     read_socket: Arc<Mutex<ReadHalf<TlsStream<TcpStream>>>>,
     d2c_topic: TopicName,
     device_id: String,
+    no_pingresp_count: Arc<Mutex<u32>>,
     #[cfg(feature = "c2d-messages")]
     rx_topic_prefix: String,
     ping_join_handle: Option<Arc<JoinHandle<()>>>,
@@ -219,6 +220,7 @@ impl MqttTransport {
             read_socket: Arc::new(Mutex::new(read_socket)),
             d2c_topic: TopicName::new(cloud_bound_messages_topic(&device_id)).unwrap(),
             device_id: device_id.to_string(),
+            no_pingresp_count: Arc::new(Mutex::new(0)),
             #[cfg(feature = "c2d-messages")]
             rx_topic_prefix: device_bound_messages_topic_prefix(&device_id),
             ping_join_handle: None,
@@ -327,6 +329,12 @@ impl Transport for MqttTransport {
     }
 
     async fn ping(&mut self) -> crate::Result<()> {
+        let mut no_pingresp_count = self.no_pingresp_count.lock().await;
+        if *no_pingresp_count > 5 {
+            panic!("No ping response");
+        }
+        *no_pingresp_count += 1;
+
         debug!("Sending PINGREQ to broker");
 
         let pingreq_packet = PingreqPacket::new();
@@ -376,6 +384,8 @@ impl Transport for MqttTransport {
                 match packet {
                     // TODO: handle ping req from server and we should send ping response in return
                     VariablePacket::PingrespPacket(..) => {
+                        let mut no_pingresp_count = cloned_self.no_pingresp_count.lock().await;
+                        *no_pingresp_count = 0;
                         debug!("Receiving PINGRESP from broker ..");
                     }
                     VariablePacket::PublishPacket(ref publ) => {
